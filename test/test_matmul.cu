@@ -1,10 +1,14 @@
-﻿#include <cuda_runtime.h>
+﻿// test_matmul.cu
+#include <cuda_runtime.h>
 #include <iostream>
 #include <vector>
 #include <cmath>
 #include <cstdlib>
 
 #include "tensor.hpp"
+
+// ---------- 定义全局内存池指针（必须且只能定义一次） ----------
+MemoryPool* g_memory_pool = nullptr;
 
 // 声明 kernel 命名空间中的函数和结构（定义在 matmul_kernel.cu 中）
 namespace kernel {
@@ -140,6 +144,17 @@ void test_matmul_basic(int K, int M) {
 
 // ---------- main ----------
 int main(int argc, char** argv) {
+    // 可选：创建内存池
+    try {
+        // 如果不需要内存池，可以注释掉下面两行，或设置 g_memory_pool = nullptr;
+        g_memory_pool = new MemoryPool(256 * 1024 * 1024);  // 256 MB
+        std::cout << "MemoryPool created (256 MB)." << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to create MemoryPool: " << e.what() << std::endl;
+        std::cerr << "Falling back to cudaMalloc." << std::endl;
+        g_memory_pool = nullptr;
+    }
+
     // 检查 CUDA 设备
     int deviceCount = 0;
     cudaError_t err = cudaGetDeviceCount(&deviceCount);
@@ -167,5 +182,12 @@ int main(int argc, char** argv) {
     test_matmul_basic(K, M);
 
     std::cout << "All tests passed!" << std::endl;
+
+    // 清理内存池（可选）
+    if (g_memory_pool) {
+        delete g_memory_pool;
+        g_memory_pool = nullptr;
+    }
+
     return EXIT_SUCCESS;
 }
