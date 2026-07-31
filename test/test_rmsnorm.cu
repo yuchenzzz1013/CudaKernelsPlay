@@ -1,70 +1,126 @@
-﻿#include <iostream>
-#include <vector>
-#include <random>
+﻿#include <cuda_runtime.h>
+
 #include <cmath>
-#include <chrono>
-#include <cuda_runtime.h>
-#include "memory_pool.hpp"
+#include <iostream>
+#include <random>
+#include <vector>
+
 #include "tensor.hpp"
 
-void rmsnorm_forward(float* out, const float* in, int rows, int cols, float eps = 1e-6f);
+namespace cuda_ops {
 
-MemoryPool* g_memory_pool = nullptr;
+template <typename T>
+void RmsNorm(const T* input, const T* weight, T* output, int tokens,
+             int hidden_size, float epsilon, cudaStream_t stream = nullptr);
+
+}
+
+template <typename T>
+void CheckResult(const std::vector<T>& output, const std::vector<T>& ref) {
+  constexpr float kTolerance = 1e-3f;
+
+  for (size_t i = 0; i < output.size(); ++i) {
+    float diff = std::abs(output[i] - ref[i]);
+
+    if (diff > kTolerance) {
+      std::cerr << "Mismatch\n"
+                << "index=" << i << "\noutput=" << output[i]
+                << "\nreference=" << ref[i] << std::endl;
+
+      exit(-1);
+    }
+  }
+}
+
+template <typename T>
+void TestRmsNorm(int tokens, int hidden_size) {
+  std::cout << "\nRMSNorm " << tokens << " x " << hidden_size << std::endl;
+
+  Tensor<T> input({tokens, hidden_size}, Device::CUDA);
+
+  Tensor<T> weight({hidden_size}, Device::CUDA);
+
+  Tensor<T> output({tokens, hidden_size}, Device::CUDA);
+
+  std::vector<T> h_input(tokens * hidden_size);
+
+  std::vector<T> h_weight(hidden_size);
+
+  std::mt19937 gen(1234);
+
+  std::uniform_real_distribution<T> dist(-1, 1);
+
+  for (auto& x : h_input) x = dist(gen);
+
+  for (auto& x : h_weight) x = dist(gen);
+
+  input.copy_from_host(h_input.data());
+
+  weight.copy_from_host(h_weight.data());
+
+  cudaEvent_t start, stop;
+
+  cudaEventCreate(&start);
+
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
+
+  cuda_ops::RmsNorm<T>(input.data(), weight.data(), output.data(), tokens,
+                       hidden_size, 1e-5f);
+
+  cudaEventRecord(stop);
+
+  cudaEventSynchronize(stop);
+
+  float ms;
+
+  cudaEventElapsedTime(&ms, start, stop);
+
+  std::vector<T> h_output(tokens * hidden_size);
+
+  output.copy_to_host(h_output.data());
+
+  /*
+   * CPU reference
+   */
+  std::vector<T> ref(tokens * hidden_size);
+
+  for (int token = 0; token < tokens; ++token) {
+    float sum = 0;
+
+    for (int i = 0; i < hidden_size; ++i) {
+      float value = h_input[token * hidden_size + i];
+
+      sum += value * value;
+    }
+
+    float inv_rms = 1.0f / sqrtf(sum / hidden_size + 1e-5f);
+
+    for (int i = 0; i < hidden_size; ++i) {
+      ref[token * hidden_size + i] =
+          h_input[token * hidden_size + i] * inv_rms * h_weight[i];
+    }
+  }
+
+  CheckResult(h_output, ref);
+
+  std::cout << "Correctness : PASS\n";
+
+  std::cout << "Latency : " << ms << " ms\n";
+
+  double bytes =
+      static_cast<double>(tokens * hidden_size * 2 + hidden_size) * sizeof(T);
+
+  std::cout << "Bandwidth : " << bytes / (ms * 1e6) << " GB/s\n";
+}
 
 int main() {
-    const int rows = 8192, cols = 4096;
-    const float eps = 1e-6f;
+  TestRmsNorm<float>(1024, 4096);
 
-    // 1. 计算所需显存大小（输入+输出），并初始化内存池
-    size_t element_count = static_cast<size_t>(rows) * cols;
-    size_t bytes_per_tensor = element_count * sizeof(float);
-    size_t pool_size = static_cast<size_t>(bytes_per_tensor * 2 * 1.2); // 留20%余量
-    if (pool_size < 256 * 1024 * 1024) pool_size = 256 * 1024 * 1024;
+  TestRmsNorm<float>(4096, 4096);
 
-    try {
-        g_memory_pool = new MemoryPool(pool_size);
-    } catch (const std::exception& e) {
-        std::cerr << "MemoryPool init failed: " << e.what() << std::endl;
-        return -1;
-    }
+  TestRmsNorm<float>(8192, 8192);
 
-    // 2. 使用内存池创建输入/输出张量
-    tensor::Tensor input(tensor::DataType::kDataTypeFp32, {rows, cols}, true);
-    tensor::Tensor output(tensor::DataType::kDataTypeFp32, {rows, cols}, true);
-
-    // 3. 生成随机输入数据并拷贝到设备
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    float* h_input = new float[element_count];
-    for (size_t i = 0; i < element_count; ++i) h_input[i] = dist(gen);
-
-    cudaMemcpy(input.ptr<float>(), h_input, bytes_per_tensor, cudaMemcpyHostToDevice);
-
-    // 4. 预热并计时多次执行，取平均耗时
-    rmsnorm_forward(output.ptr<float>(), input.ptr<float>(), rows, cols, eps);
-    cudaDeviceSynchronize();
-
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    const int iterations = 10;
-    cudaEventRecord(start);
-    for (int i = 0; i < iterations; ++i) {
-        rmsnorm_forward(output.ptr<float>(), input.ptr<float>(), rows, cols, eps);
-    }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-
-    float ms = 0.0f;
-    cudaEventElapsedTime(&ms, start, stop);
-    std::cout << "Average kernel time: " << ms / iterations << " ms" << std::endl;
-
-    // 5. 清理资源
-    delete[] h_input;
-    delete g_memory_pool;
-    g_memory_pool = nullptr;
-
-    return 0;
+  return 0;
 }

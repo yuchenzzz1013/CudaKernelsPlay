@@ -1,64 +1,243 @@
 ﻿#include <cuda_runtime.h>
-#include <iostream>
+
+#include <algorithm>
 #include <cassert>
-#include <cmath>
+#include <chrono>
+#include <iostream>
+#include <random>
+#include <vector>
+
+
 #include "tensor.hpp"
 
-namespace kernel {
-    void add_kernel_cu(const tensor::Tensor&, const tensor::Tensor&, tensor::Tensor&, cudaStream_t = nullptr);
+
+
+namespace cuda_ops {
+
+template <typename T>
+void Add(
+    const T* input_a,
+    const T* input_b,
+    T* output,
+    size_t element_count,
+    cudaStream_t stream = nullptr);
+
 }
 
-void set_value_cu(float* ptr, size_t size, float value) {
-    float* host = new float[size];
-    for (size_t i = 0; i < size; ++i) host[i] = value;
-    cudaMemcpy(ptr, host, size * sizeof(float), cudaMemcpyHostToDevice);
-    delete[] host;
+
+
+template <typename T>
+void CheckResult(
+    const std::vector<T>& output,
+    const std::vector<T>& expected) {
+
+
+  assert(output.size() == expected.size());
+
+
+  for (size_t idx = 0; idx < output.size(); ++idx) {
+
+    if (std::abs(output[idx] - expected[idx]) > 1e-5) {
+
+      std::cerr
+          << "Mismatch at "
+          << idx
+          << " output="
+          << output[idx]
+          << " expected="
+          << expected[idx]
+          << std::endl;
+
+      exit(-1);
+    }
+  }
 }
+
+
+
+template <typename T>
+void TestAdd(size_t element_count) {
+
+
+  std::cout
+      << "\nTest size: "
+      << element_count
+      << std::endl;
+
+
+
+  Tensor<T> input_a(
+      {static_cast<int>(element_count)},
+      Device::CUDA);
+
+
+  Tensor<T> input_b(
+      {static_cast<int>(element_count)},
+      Device::CUDA);
+
+
+
+  Tensor<T> output(
+      {static_cast<int>(element_count)},
+      Device::CUDA);
+
+
+
+  std::vector<T> host_a(element_count);
+  std::vector<T> host_b(element_count);
+
+
+  std::mt19937 generator(1234);
+
+  std::uniform_real_distribution<T> distribution(
+      0.0,
+      1.0);
+
+
+
+  for (size_t idx = 0; idx < element_count; ++idx) {
+
+    host_a[idx] = distribution(generator);
+
+    host_b[idx] = distribution(generator);
+  }
+
+
+
+  input_a.copy_from_host(host_a.data());
+
+  input_b.copy_from_host(host_b.data());
+
+
+
+  cudaEvent_t start;
+  cudaEvent_t stop;
+
+
+  cudaEventCreate(&start);
+
+  cudaEventCreate(&stop);
+
+
+
+  cudaEventRecord(start);
+
+
+
+  cuda_ops::Add<T>(
+      input_a.data(),
+      input_b.data(),
+      output.data(),
+      element_count);
+
+
+
+  cudaEventRecord(stop);
+
+
+  cudaEventSynchronize(stop);
+
+
+
+  float elapsed_time = 0.0f;
+
+
+  cudaEventElapsedTime(
+      &elapsed_time,
+      start,
+      stop);
+
+
+
+  std::vector<T> host_output(element_count);
+
+
+  output.copy_to_host(
+      host_output.data());
+
+
+
+  std::vector<T> reference(element_count);
+
+
+  for (size_t idx = 0; idx < element_count; ++idx) {
+
+    reference[idx] =
+        host_a[idx] + host_b[idx];
+
+  }
+
+
+
+  CheckResult(
+      host_output,
+      reference);
+
+
+
+  std::cout
+      << "Passed\n";
+
+
+  std::cout
+      << "Kernel time: "
+      << elapsed_time
+      << " ms\n";
+
+
+
+  double bandwidth =
+      static_cast<double>(element_count *
+                          sizeof(T) *
+                          3)
+      /
+      (elapsed_time * 1e6);
+
+
+
+  std::cout
+      << "Memory bandwidth: "
+      << bandwidth
+      << " GB/s\n";
+
+
+
+  cudaEventDestroy(start);
+
+  cudaEventDestroy(stop);
+
+}
+
+
+
+
 
 int main() {
-    int32_t size = 32 * 151;
-    tensor::Tensor t1(tensor::DataType::kDataTypeFp32, size, true);
-    tensor::Tensor t2(tensor::DataType::kDataTypeFp32, size, true);
-    tensor::Tensor out(tensor::DataType::kDataTypeFp32, size, true);
 
-    set_value_cu(t1.ptr<float>(), size, 2.0f);
-    set_value_cu(t2.ptr<float>(), size, 3.0f);
 
-    kernel::add_kernel_cu(t1, t2, out);
-    cudaDeviceSynchronize();
+  constexpr size_t kSmallSize =
+      1 << 20;       // 1M
 
-    float* output = new float[size];
-    cudaMemcpy(output, out.ptr<float>(), size * sizeof(float), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < size; ++i) {
-        assert(output[i] == 5.0f);
-    }
-    std::cout << "Test passed (no stream)." << std::endl;
 
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
-    kernel::add_kernel_cu(t1, t2, out, stream);
-    cudaDeviceSynchronize();
-    cudaMemcpy(output, out.ptr<float>(), size * sizeof(float), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < size; ++i) {
-        assert(output[i] == 5.0f);
-    }
-    cudaStreamDestroy(stream);
-    std::cout << "Test passed (with stream)." << std::endl;
+  constexpr size_t kMediumSize =
+      1 << 24;       // 16M
 
-    size = 1 << 25;
-    tensor::Tensor t3(tensor::DataType::kDataTypeFp32, size, true);
-    tensor::Tensor t4(tensor::DataType::kDataTypeFp32, size, true);
-    tensor::Tensor out2(tensor::DataType::kDataTypeFp32, size, true);
-    set_value_cu(t3.ptr<float>(), size, 2.1f);
-    set_value_cu(t4.ptr<float>(), size, 3.3f);
-    kernel::add_kernel_cu(t3, t4, out2);
-    cudaDeviceSynchronize();
-    cudaMemcpy(output, out2.ptr<float>(), size * sizeof(float), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < size; ++i) {
-        assert(std::fabs(output[i] - 5.4f) < 0.1f);
-    }
-    std::cout << "Align test passed." << std::endl;
 
-    delete[] output;
-    return 0;
+  constexpr size_t kLargeSize =
+      1 << 27;       // 128M
+
+
+
+  TestAdd<float>(kSmallSize);
+
+  TestAdd<float>(kMediumSize);
+
+  TestAdd<float>(kLargeSize);
+
+
+
+  cudaDeviceSynchronize();
+
+
+  return 0;
 }

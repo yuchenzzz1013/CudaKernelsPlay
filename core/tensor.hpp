@@ -1,109 +1,137 @@
-// tensor.hpp
-#pragma once
+﻿#pragma once
 
 #include <cuda_runtime.h>
-#include <cstddef>
+
 #include <cassert>
-#include <stdexcept>
+#include <iostream>
+#include <numeric>
 #include <vector>
-#include <algorithm>
 
-#include "memory_pool.hpp"
+enum class Device { CPU, CUDA };
 
-namespace tensor {
-
-enum class DataType {
-    kDataTypeFp32,
-    kDataTypeInt8,
-    kDataTypeInt32,
-};
-
-inline size_t data_type_size(DataType dtype) {
-    switch (dtype) {
-        case DataType::kDataTypeFp32: return 4;
-        case DataType::kDataTypeInt8: return 1;
-        case DataType::kDataTypeInt32: return 4;
-        default: return 0;
-    }
-}
-
-enum class DeviceType {
-    kDeviceCPU,
-    kDeviceCUDA,
-    kDeviceUnknown,
-};
-
+template <typename T>
 class Tensor {
-public:
-    Tensor(DataType dtype, const std::vector<size_t>& dims, bool need_alloc = true, void* ptr = nullptr)
-        : data_type_(dtype), dims_(dims), data_(nullptr), device_type_(DeviceType::kDeviceCUDA),
-          using_pool_(false) {
-        size_ = 1;
-        for (auto d : dims_) size_ *= d;
-        if (need_alloc) {
-            allocate();
-        } else if (ptr) {
-            data_ = ptr;
-            owns_memory_ = false;
-        }
+ public:
+  Tensor() : data_(nullptr), device_(Device::CPU), numel_(0) {}
+
+  Tensor(const std::vector<int>& shape, Device device = Device::CUDA)
+      : shape_(shape), device_(device) {
+    numel_ = 1;
+
+    for (auto s : shape_) numel_ *= s;
+
+    allocate();
+  }
+
+  ~Tensor() { release(); }
+
+  // 禁止拷贝
+  Tensor(const Tensor&) = delete;
+
+  Tensor& operator=(const Tensor&) = delete;
+
+  // move
+  Tensor(Tensor&& other) noexcept { move_from(std::move(other)); }
+
+  Tensor& operator=(Tensor&& other) noexcept {
+    if (this != &other) {
+      release();
+      move_from(std::move(other));
     }
 
-    Tensor(DataType dtype, size_t size, bool need_alloc = true, void* ptr = nullptr)
-        : Tensor(dtype, std::vector<size_t>{size}, need_alloc, ptr) {}
+    return *this;
+  }
 
-    ~Tensor() {
-        if (data_ && owns_memory_) {
-            if (using_pool_ && g_memory_pool) {
-                g_memory_pool->deallocate(data_);
-            } else {
-                cudaFree(data_);
-            }
-        }
+  T* data() { return data_; }
+
+  const T* data() const { return data_; }
+
+  size_t numel() const { return numel_; }
+
+  const std::vector<int>& shape() const { return shape_; }
+
+  Device device() const { return device_; }
+
+  size_t bytes() const { return sizeof(T) * numel_; }
+
+  void zero() {
+    if (device_ == Device::CUDA) {
+      cudaMemset(data_, 0, bytes());
+    } else {
+      memset(data_, 0, bytes());
+    }
+  }
+
+  // CPU -> GPU
+  void copy_from_host(const T* host) {
+    if (device_ == Device::CUDA) {
+      cudaMemcpy(data_, host, bytes(), cudaMemcpyHostToDevice);
+    } else {
+      memcpy(data_, host, bytes());
+    }
+  }
+
+  // GPU -> CPU
+
+  void copy_to_host(T* host) {
+    if (device_ == Device::CUDA) {
+      cudaMemcpy(host, data_, bytes(), cudaMemcpyDeviceToHost);
+    } else {
+      memcpy(host, data_, bytes());
+    }
+  }
+
+  void print(int n = 10) {
+    std::vector<T> host(numel_);
+
+    copy_to_host(host.data());
+
+    for (int i = 0; i < std::min((size_t)n, numel_); i++) {
+      std::cout << host[i] << " ";
     }
 
-    Tensor(const Tensor&) = delete;
-    Tensor& operator=(const Tensor&) = delete;
+    std::cout << std::endl;
+  }
 
-    void allocate() {
-        if (size_ == 0) return;
-        size_t bytes = byte_size();
-        if (g_memory_pool) {
-            data_ = g_memory_pool->allocate(bytes);
-            if (!data_) {
-                throw std::runtime_error("MemoryPool allocation failed");
-            }
-            owns_memory_ = true;
-            using_pool_ = true;
-        } else {
-            if (cudaMalloc(&data_, bytes) != cudaSuccess) {
-                throw std::runtime_error("cudaMalloc failed");
-            }
-            owns_memory_ = true;
-            using_pool_ = false;
-        }
-        device_type_ = DeviceType::kDeviceCUDA;
+ private:
+  void allocate() {
+    size_t size = bytes();
+
+    if (device_ == Device::CUDA) {
+      cudaMalloc(&data_, size);
+    } else {
+      data_ = new T[numel_];
+    }
+  }
+
+  void release() {
+    if (data_ == nullptr) return;
+
+    if (device_ == Device::CUDA) {
+      cudaFree(data_);
+    } else {
+      delete[] data_;
     }
 
-    size_t size() const { return size_; }
-    size_t byte_size() const { return size_ * data_type_size(data_type_); }
+    data_ = nullptr;
+  }
 
-    size_t dims_size() const { return dims_.size(); }
-    size_t get_dim(size_t idx) const { return dims_.at(idx); }
-    bool is_empty() const { return size_ == 0; }
+  void move_from(Tensor&& other) {
+    data_ = other.data_;
+    shape_ = std::move(other.shape_);
+    device_ = other.device_;
+    numel_ = other.numel_;
 
-    template<typename T>
-    T* ptr() const { return static_cast<T*>(data_); }
+    other.data_ = nullptr;
+    other.numel_ = 0;
+  }
 
-    DeviceType device_type() const { return device_type_; }
+ private:
+  T* data_;
 
-private:
-    DataType data_type_;
-    std::vector<size_t> dims_;
-    size_t size_ = 0;
-    void* data_ = nullptr;
-    DeviceType device_type_ = DeviceType::kDeviceUnknown;
-    bool owns_memory_ = false;
-    bool using_pool_ = false;
+  std::vector<int> shape_;
+
+  Device device_;
+
+  size_t numel_;
 };
-
-} // namespace tensor
