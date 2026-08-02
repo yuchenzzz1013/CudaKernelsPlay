@@ -35,6 +35,5 @@ CudaKernelsPlay/
 - CUDA Toolkit（推荐 11.0 及以上版本）
 - [CUB](https://github.com/NVIDIA/cub)（用于块级规约操作）
 - C++17 兼容编译器
-- CMake（推荐用于构建）
 
 ---

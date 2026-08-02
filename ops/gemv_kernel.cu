@@ -9,7 +9,7 @@ constexpr int kBlockSize = 256;
 constexpr int kRowsPerBlock = 4;
 
 template <typename T>
-__global__ void gemn_kernel_cu_fp32(const T* matrix, const T* vector, T* output,
+__global__ void gemv_kernel_cu_fp32(const T* matrix, const T* vector, T* output,
                            int rows, int cols) {
   const int block_row = blockIdx.x * kRowsPerBlock;
 
@@ -88,7 +88,7 @@ void Gemv(const T* matrix, const T* vector, T* output, int rows, int cols,
           cudaStream_t stream) {
   int grid_size = (rows + kRowsPerBlock - 1) / kRowsPerBlock;
 
-  gemn_kernel_cu_fp32<T><<<grid_size, kBlockSize, 0, stream>>>(matrix, vector, output,
+  gemv_kernel_cu_fp32<T><<<grid_size, kBlockSize, 0, stream>>>(matrix, vector, output,
                                                       rows, cols);
 }
 
