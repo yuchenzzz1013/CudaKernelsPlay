@@ -54,7 +54,7 @@ __device__ inline float WarpReduceMax(float x) {
 // ============================================================
 
 template <int HEAD_DIM>
-__global__ void MhaKernelV4(const float* __restrict__ q,
+__global__ void mha_kernel_cu_fp32(const float* __restrict__ q,
                             const float* __restrict__ k,
                             const float* __restrict__ v,
 
@@ -187,7 +187,7 @@ void MhaForward(const float* q, const float* k, const float* v,
   float scale = 1.f / sqrtf(static_cast<float>(head_dim));
 
   if (head_dim == 64) {
-    MhaKernelV4<64><<<grid, block, 0, stream>>>(q, k, v, out, seq_len, scale);
+    mha_kernel_cu_fp32<64><<<grid, block, 0, stream>>>(q, k, v, out, seq_len, scale);
 
   } else {
     printf("only support D=64\n");
