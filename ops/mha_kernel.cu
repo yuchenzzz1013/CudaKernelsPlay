@@ -61,9 +61,9 @@ __global__ void mha_kernel_cu_fp32(const float* __restrict__ q,
                             float* __restrict__ out,
 
                             int seq_len, float scale) {
-  int lane = threadIdx.x & 31;
+  int lane = threadIdx.x % 32;
 
-  int warp_id = threadIdx.x >> 5;
+  int warp_id = threadIdx.x / 32;
 
   int query = blockIdx.x * 8 + warp_id;
 
