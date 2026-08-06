@@ -1,39 +1,48 @@
 # CudaKernelsPlay
 
-CUDA 核函数学习与实践仓库
+**CUDA 核函数学习与实践仓库** —— 手写高性能算子，聚焦 LLM 推理场景。
 
 ---
 
-> **项目状态**：本项目正处于持续迭代阶段，当前已实现基础算子（向量加、GEMV、RMSNorm、SwiGLU），后续将陆续添加 LLM 推理中更常用的高性能算子
-
----
-
-## 项目简介
-
-`CudaKernelsPlay` 仓库以模块化方式组织，包含核心基础设施（内存池、张量抽象）和若干常用算子的 CUDA 实现。
+> **项目状态**：持续迭代中，后续将补充更多 LLM 推理常用高性能算子。
 
 ---
 
 ## 目录结构
 
-```
+```text
 CudaKernelsPlay/
-├── core/                      # 核心基础设施
-│   ├── memory_pool.hpp        # GPU 内存池管理
-│   └── tensor.hpp             # 张量数据结构抽象
-├── ops/                       # CUDA 算子实现
-│    
-├── test/                      # 单元测试
-│ 
+├── core/                  # 核心基础设施
+│   ├── memory_pool.hpp    # GPU 内存池
+│   └── tensor.hpp         # 轻量级张量抽象
+├── ops/                   # CUDA 算子实现
+├── test/                  # 单元测试
 └── README.md
 ```
 
 ---
 
+## 优化技术
+
+### 访存优化
+- **Memory Coalescing** 
+- **向量化加载** 
+- **Shared Memory 缓存** 
+- **Bank Conflict 规避** 
+
+### 并行策略
+- **Warp 级并行** 
+- **Block 级规约** 
+- **Tile 分块** 
+- **寄存器重用** 
+
+### 性能分析
+- **Nsight Systems / Compute** 
+---
+
 ## 依赖
 
-- CUDA Toolkit（推荐 11.0 及以上版本）
-- [CUB](https://github.com/NVIDIA/cub)（用于块级规约操作）
-- C++17 兼容编译器
+- **CUDA Toolkit** 11.0+  
+- **C++17** 兼容编译器
 
 ---
