@@ -12,11 +12,19 @@
 
 ```text
 CudaKernelsPlay/
-├── core/                  # 核心基础设施
-│   ├── memory_pool.hpp    # GPU 内存池
-│   └── tensor.hpp         # 轻量级张量抽象
-├── ops/                   # CUDA 算子实现
-├── test/                  # 单元测试
+├── include/
+│   └── cudakernels/
+│       ├── core/              # 错误检查、内存池、张量抽象
+│       └── ops/               # 算子公共 API
+│           ├── blas/          
+│           ├── norm/          
+│           ├── activation/    
+│           ├── reduce/       
+│           ├── transform/    
+│           └── attention/    
+├── src/                       # 算子实现
+├── tests/                     # 单元测试
+├── CMakeLists.txt
 └── README.md
 ```
 
@@ -38,11 +46,28 @@ CudaKernelsPlay/
 
 ### 性能分析
 - **Nsight Systems / Compute** 
+
+---
+
+## 构建与测试
+
+```bash
+# 配置（Release 模式）
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+# 编译（并行）
+cmake --build build -j$(nproc)
+
+# 运行单个算子测试
+./build/tests/test_sgemm
+```
+
 ---
 
 ## 依赖
 
 - **CUDA Toolkit** 11.0+  
+- **CMake** 3.22+  
 - **C++17** 兼容编译器
 
 ---
