@@ -8,6 +8,7 @@ set(CUDAKERNELS_TESTS
   ops/reduce/test_sum_reduce.cu
   ops/reduce/test_max_reduce.cu
   ops/transform/test_transpose.cu
+  ops/transform/test_rope.cu
   ops/transform/test_softmax.cu
   ops/transform/test_topk.cu
   ops/attention/test_mha.cu

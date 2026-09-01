@@ -32,6 +32,7 @@ add_library(cudakernels
 
   # transform
   src/ops/transform/transpose.cu
+  src/ops/transform/rope.cu
   src/ops/transform/softmax.cu
   src/ops/transform/topk.cu
 
