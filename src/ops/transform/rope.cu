@@ -6,53 +6,52 @@
 
 namespace {
 
-// ----------------------------------------------------------------------
-// 核函数：每个 block 处理一个 token，block 内线程并行处理维度对
-// ----------------------------------------------------------------------
 template <typename T>
-__global__ void rope_kernel(const int* __restrict__ d_positions,
-                            T* __restrict__ d_q,
-                            T* __restrict__ d_k,
-                            int num_tokens,
-                            int num_heads,
-                            int head_dim,
-                            const T* __restrict__ d_cos_cache,
-                            const T* __restrict__ d_sin_cache,
-                            int half) {
-    // 当前 token 索引
-    int token_idx = blockIdx.x;
-    if (token_idx >= num_tokens) return;
+__global__ void rope_kernel_opt(const int* __restrict__ d_positions,
+                                T* __restrict__ d_q,
+                                T* __restrict__ d_k,
+                                int num_tokens,
+                                int num_heads,
+                                int head_dim,
+                                const T* __restrict__ d_cos_cache,
+                                const T* __restrict__ d_sin_cache,
+                                int half) {
+    // 全局线程索引 = 扁平化的 (token, head, i)
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_pairs = num_tokens * num_heads * half;
+    if (idx >= total_pairs) return;
+
+    // 解析三维索引
+    int token_idx = idx / (num_heads * half);
+    int rem = idx % (num_heads * half);
+    int head_idx = rem / half;
+    int i = rem % half;
 
     int pos = d_positions[token_idx];
-    int tid = threadIdx.x;
-    int stride = blockDim.x;
+    int token_offset = token_idx * num_heads * head_dim;
+    int head_offset = token_offset + head_idx * head_dim;
 
-    // 每个线程负责一个或多个维度对 (i, i + half)
-    for (int i = tid; i < half; i += stride) {
-        T cos_val = d_cos_cache[pos * half + i];
-        T sin_val = d_sin_cache[pos * half + i];
+    // 从全局缓存读取 cos/sin（每个线程只读一次）
+    T cos_val = d_cos_cache[static_cast<size_t>(pos) * half + i];
+    T sin_val = d_sin_cache[static_cast<size_t>(pos) * half + i];
 
-        // 对该 token 的所有头应用旋转
-        int token_offset = token_idx * num_heads * head_dim;
-        for (int h = 0; h < num_heads; ++h) {
-            int offset = token_offset + h * head_dim;
+    // 分别加载 x 和 y（不连续，但同线程束内 i 连续，两个加载都是连续地址）
+    int idx_x = head_offset + i;
+    int idx_y = head_offset + i + half;
 
-            // ---------- 处理 Q ----------
-            T x = d_q[offset + i];
-            T y = d_q[offset + i + half];
-            d_q[offset + i]          = x * cos_val - y * sin_val;
-            d_q[offset + i + half]   = x * sin_val + y * cos_val;
+    T x_q = d_q[idx_x];
+    T y_q = d_q[idx_y];
+    T x_k = d_k[idx_x];
+    T y_k = d_k[idx_y];
 
-            // ---------- 处理 K ----------
-            x = d_k[offset + i];
-            y = d_k[offset + i + half];
-            d_k[offset + i]          = x * cos_val - y * sin_val;
-            d_k[offset + i + half]   = x * sin_val + y * cos_val;
-        }
-    }
+    // 旋转计算
+    d_q[idx_x] = x_q * cos_val - y_q * sin_val;
+    d_q[idx_y] = x_q * sin_val + y_q * cos_val;
+    d_k[idx_x] = x_k * cos_val - y_k * sin_val;
+    d_k[idx_y] = x_k * sin_val + y_k * cos_val;
 }
 
-} // namespace
+} // anonymous namespace
 
 namespace cudakernels {
 
@@ -76,10 +75,13 @@ void Rope(const int* d_positions,
     }
 
     int half = head_dim / 2;
-    constexpr int kBlockSize = 128;          // 每 block 线程数
-    int num_blocks = num_tokens;             // 每个 block 处理一个 token
+    int total_pairs = num_tokens * num_heads * half;
 
-    rope_kernel<T><<<num_blocks, kBlockSize, 0, stream>>>(
+    // 每个 block 使用 256 线程（可根据占用率调整）
+    constexpr int kBlockSize = 256;
+    int num_blocks = (total_pairs + kBlockSize - 1) / kBlockSize;
+
+    rope_kernel_opt<T><<<num_blocks, kBlockSize, 0, stream>>>(
         d_positions, d_q, d_k, num_tokens, num_heads, head_dim,
         d_cos_cache, d_sin_cache, half);
 

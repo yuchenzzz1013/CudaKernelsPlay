@@ -8,12 +8,10 @@
 #include <cmath>
 #include <iostream>
 #include <iomanip>
+#include <chrono>
 
 using namespace cudakernels;
 
-// ----------------------------------------------------------------------
-// CPU 参考实现
-// ----------------------------------------------------------------------
 template <typename T>
 void rope_reference(const std::vector<int>& h_positions,
                     std::vector<T>& h_q,
@@ -33,8 +31,8 @@ void rope_reference(const std::vector<int>& h_positions,
         for (int h = 0; h < num_heads; ++h) {
             int head_offset = token_offset + h * head_dim;
             for (int i = 0; i < half; ++i) {
-                T cos_val = h_cos_cache[pos * half + i];
-                T sin_val = h_sin_cache[pos * half + i];
+                T cos_val = h_cos_cache[static_cast<size_t>(pos) * half + i];
+                T sin_val = h_sin_cache[static_cast<size_t>(pos) * half + i];
 
                 // Q
                 T x = h_q[head_offset + i];
@@ -53,25 +51,24 @@ void rope_reference(const std::vector<int>& h_positions,
 }
 
 // ----------------------------------------------------------------------
-// 主测试函数
+// 主测试函数（含性能计时）
 // ----------------------------------------------------------------------
 int main() {
-    // 参数配置 (Qwen3 常用: head_dim=128, 此处用64方便)
-    const int batch_size = 2;
-    const int seq_len    = 4;
-    const int num_heads  = 3;
-    const int head_dim   = 64;
-    const int half       = head_dim / 2;
-    const int max_seq_len = 128;
+    const int batch_size = 8;
+    const int seq_len    = 4096;
+    const int num_heads  = 32;
+    const int head_dim   = 128;
+    const int max_seq_len = 8192;  // 必须大于等于实际位置值
+
+    const int half = head_dim / 2;
     const int num_tokens = batch_size * seq_len;
-    const size_t qk_size = num_tokens * num_heads * head_dim;
+    const size_t qk_size = static_cast<size_t>(num_tokens) * num_heads * head_dim;
 
     // ---- 随机生成输入 ----
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     std::uniform_int_distribution<int> pos_dist(0, max_seq_len - 1);
 
-    // 主机数据
     std::vector<int> h_positions(num_tokens);
     std::vector<float> h_q(qk_size), h_k(qk_size);
     for (int i = 0; i < num_tokens; ++i) {
@@ -82,50 +79,85 @@ int main() {
         h_k[i] = dist(rng);
     }
 
-    // 预计算 cos/sin 缓存 (base = 10000.0, Qwen3 默认)
-    std::vector<float> h_cos_cache(max_seq_len * half);
-    std::vector<float> h_sin_cache(max_seq_len * half);
+    // ---- 预计算 cos/sin 缓存 ----
+    std::vector<float> h_cos_cache(static_cast<size_t>(max_seq_len) * half);
+    std::vector<float> h_sin_cache(static_cast<size_t>(max_seq_len) * half);
     float base = 10000.0f;
     for (int pos = 0; pos < max_seq_len; ++pos) {
         for (int i = 0; i < half; ++i) {
             float theta = pos / powf(base, 2.0f * i / head_dim);
-            h_cos_cache[pos * half + i] = cosf(theta);
-            h_sin_cache[pos * half + i] = sinf(theta);
+            h_cos_cache[static_cast<size_t>(pos) * half + i] = cosf(theta);
+            h_sin_cache[static_cast<size_t>(pos) * half + i] = sinf(theta);
         }
     }
 
+    // ---- 保存副本用于GPU测试 ----
+    std::vector<float> init_q = h_q;
+    std::vector<float> init_k = h_k;
+
     // ---- CPU 参考 ----
+    auto start_cpu = std::chrono::high_resolution_clock::now();
     std::vector<float> ref_q = h_q;
     std::vector<float> ref_k = h_k;
     rope_reference<float>(h_positions, ref_q, ref_k,
                           batch_size, seq_len, num_heads, head_dim,
                           h_cos_cache, h_sin_cache);
+    auto end_cpu = std::chrono::high_resolution_clock::now();
+    double cpu_ms = std::chrono::duration<double, std::milli>(end_cpu - start_cpu).count();
+    std::cout << "CPU reference time: " << cpu_ms << " ms\n";
 
-    // ---- GPU 计算 ----
-    Tensor<int> d_positions({num_tokens}, Device::CUDA);
+    // ---- GPU 内存分配 ----
+    Tensor<int> d_positions({static_cast<size_t>(num_tokens)}, Device::CUDA);
     Tensor<float> d_q({qk_size}, Device::CUDA);
     Tensor<float> d_k({qk_size}, Device::CUDA);
     Tensor<float> d_cos({static_cast<size_t>(max_seq_len * half)}, Device::CUDA);
     Tensor<float> d_sin({static_cast<size_t>(max_seq_len * half)}, Device::CUDA);
 
     d_positions.copy_from_host(h_positions.data());
-    d_q.copy_from_host(h_q.data());
-    d_k.copy_from_host(h_k.data());
+    d_q.copy_from_host(init_q.data());
+    d_k.copy_from_host(init_k.data());
     d_cos.copy_from_host(h_cos_cache.data());
     d_sin.copy_from_host(h_sin_cache.data());
 
-    Rope<float>(d_positions.data(),
-                d_q.data(),
-                d_k.data(),
-                batch_size,
-                seq_len,
-                num_heads,
-                head_dim,
-                d_cos.data(),
-                d_sin.data(),
-                max_seq_len);
+    // ---- 预热（确保 GPU 频率稳定） ----
+    for (int warmup = 0; warmup < 5; ++warmup) {
+        Rope<float>(d_positions.data(),
+                    d_q.data(),
+                    d_k.data(),
+                    batch_size, seq_len, num_heads, head_dim,
+                    d_cos.data(), d_sin.data(), max_seq_len);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-    // 拷贝结果回主机
+    // ---- 正式计时（多次迭代取平均） ----
+    const int iter = 20;
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+
+    float total_ms = 0.0f;
+    for (int i = 0; i < iter; ++i) {
+        // 重新拷贝输入数据（避免缓存影响，实际测试可省略）
+        d_q.copy_from_host(init_q.data());
+        d_k.copy_from_host(init_k.data());
+
+        CUDA_CHECK(cudaEventRecord(start, nullptr));
+        Rope<float>(d_positions.data(),
+                    d_q.data(),
+                    d_k.data(),
+                    batch_size, seq_len, num_heads, head_dim,
+                    d_cos.data(), d_sin.data(), max_seq_len);
+        CUDA_CHECK(cudaEventRecord(stop, nullptr));
+        CUDA_CHECK(cudaEventSynchronize(stop));
+        float ms = 0;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+        total_ms += ms;
+    }
+    float avg_ms = total_ms / iter;
+    std::cout << "GPU kernel average time (over " << iter << " runs): "
+              << avg_ms << " ms\n";
+
+    // ---- 拷贝结果回主机进行正确性验证 ----
     std::vector<float> gpu_q(qk_size), gpu_k(qk_size);
     d_q.copy_to_host(gpu_q.data());
     d_k.copy_to_host(gpu_k.data());
