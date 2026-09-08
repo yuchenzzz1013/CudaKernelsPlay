@@ -18,6 +18,7 @@ add_library(cudakernels
   # blas
   src/ops/blas/add.cu
   src/ops/blas/gemv.cu
+  src/ops/blas/sgemv.cu
   src/ops/blas/sgemm.cu
 
   # norm
