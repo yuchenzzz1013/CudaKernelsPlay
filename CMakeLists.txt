@@ -23,6 +23,7 @@ add_library(cudakernels
 
   # norm
   src/ops/norm/rms_norm.cu
+  src/ops/norm/layerNorm.cu
 
   # activation
   src/ops/activation/swiglu.cu

@@ -5,6 +5,7 @@ set(CUDAKERNELS_TESTS
   ops/blas/test_sgemv.cu
   ops/blas/test_sgemm.cu
   ops/norm/test_rms_norm.cu
+  ops/norm/test_layer_norm.cu
   ops/activation/test_swiglu.cu
   ops/reduce/test_sum_reduce.cu
   ops/reduce/test_max_reduce.cu
