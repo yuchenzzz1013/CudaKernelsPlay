@@ -40,6 +40,7 @@ add_library(cudakernels
 
   # attention
   src/ops/attention/mha.cu
+  src/ops/attention/gqa.cu
 )
 
 target_include_directories(cudakernels PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

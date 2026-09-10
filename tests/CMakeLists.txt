@@ -14,6 +14,7 @@ set(CUDAKERNELS_TESTS
   ops/transform/test_softmax.cu
   ops/transform/test_topk.cu
   ops/attention/test_mha.cu
+  ops/attention/test_gqa.cu
 )
 
 foreach(test_file IN LISTS CUDAKERNELS_TESTS)
